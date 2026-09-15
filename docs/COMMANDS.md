@@ -90,6 +90,8 @@ pup <domain> <subgroup> <action> [options] # Nested commands
 
 **Auth note:** All workflow commands require `DD_API_KEY` + `DD_APP_KEY`. OAuth2 bearer tokens are not supported for workflow operations.
 
+**Profiling note:** All profiling commands are backed by unstable pup-specific APIs with reduced support windows. Backwards compatibility is only guaranteed for 30 days after the release of a new pup version.
+
 ## Common Patterns
 
 ### List Operations
