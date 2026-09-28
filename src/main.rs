@@ -95,7 +95,13 @@ fn sort_subcommands_by_name(command: clap::Command) -> clap::Command {
 /// into name sorting with `sort_subcommands_by_name` when generated commands
 /// are present.
 pub(crate) fn cli_command() -> clap::Command {
-    sort_subcommands_by_name(Cli::command())
+    #[allow(unused_mut)]
+    let mut cmd = sort_subcommands_by_name(Cli::command());
+    #[cfg(generated_tag = "downtime")]
+    {
+        cmd = cmd.mut_subcommand("downtime", sort_subcommands_by_name);
+    }
+    cmd
 }
 
 #[derive(Subcommand)]
@@ -4532,14 +4538,20 @@ enum DowntimeActions {
     /// List all downtimes
     List,
     /// Get downtime details
+    #[cfg(not(generated_op = "downtime.get"))]
     Get { id: String },
     /// Create a downtime from JSON file
+    #[cfg(not(generated_op = "downtime.create"))]
     Create {
         #[arg(long)]
         file: String,
     },
     /// Cancel a downtime
+    #[cfg(not(generated_op = "downtime.cancel"))]
     Cancel { id: String },
+    #[cfg(generated_tag = "downtime")]
+    #[command(flatten)]
+    Generated(crate::generated::downtime::Command),
 }
 
 // ---- DBM ----
@@ -14935,11 +14947,18 @@ async fn main_inner() -> anyhow::Result<()> {
             cfg.validate_auth()?;
             match action {
                 DowntimeActions::List => commands::downtime::list(&cfg).await?,
+                #[cfg(not(generated_op = "downtime.get"))]
                 DowntimeActions::Get { id } => commands::downtime::get(&cfg, &id).await?,
+                #[cfg(not(generated_op = "downtime.create"))]
                 DowntimeActions::Create { file } => {
                     commands::downtime::create(&cfg, &file).await?;
                 }
+                #[cfg(not(generated_op = "downtime.cancel"))]
                 DowntimeActions::Cancel { id } => commands::downtime::cancel(&cfg, &id).await?,
+                #[cfg(generated_tag = "downtime")]
+                DowntimeActions::Generated(action) => {
+                    crate::generated::downtime::run(&cfg, action).await?
+                }
             }
         }
         // --- Tags ---
