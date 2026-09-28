@@ -396,9 +396,11 @@ impl Config {
         api_host_for(&self.site)
     }
 
-    /// Returns the OAuth authorization host (e.g., `app.datadoghq.com`).
+    /// Returns the OAuth authorization host (e.g., `app.datadoghq.com`,
+    /// or `us3.datadoghq.com` for a regional site).
     ///
-    /// Canonical sites get an `app.` prefix; literal hosts are used verbatim.
+    /// Bare UI sites get an `app.` prefix. Regional sites and literal hosts
+    /// are used verbatim.
     pub fn auth_host(&self) -> String {
         auth_host_for(&self.site)
     }
@@ -707,9 +709,11 @@ where
     }
 }
 
-/// Canonical Datadog sites that use `api.{site}` for API calls and `app.{site}` for
-/// OAuth. Any other site value is treated as a **literal host** and used verbatim for
-/// both API requests and OAuth flows (enables vanity-domain and gateway use cases).
+/// Canonical Datadog sites that use `api.{site}` for API calls. OAuth uses
+/// `app.{site}` only for [`APP_PREFIX_SITES`]; every other site here is the
+/// authorize host verbatim. Any site value not in this list is a **literal host**
+/// and used verbatim for both API requests and OAuth flows (vanity-domain and
+/// gateway use cases).
 pub const KNOWN_SITES: &[&str] = &[
     "datadoghq.com",
     "us3.datadoghq.com",
@@ -721,31 +725,31 @@ pub const KNOWN_SITES: &[&str] = &[
     "datad0g.com", // staging
 ];
 
-/// Returns `true` when `site` is a known canonical Datadog site (applies `api.`/`app.`
-/// prefixes at request time) or an oncall passthrough. Everything else is a literal host.
+/// Returns `true` when `site` is a known canonical Datadog site (`api.` at request
+/// time; `app.` only for [`APP_PREFIX_SITES`]) or an oncall passthrough. Everything
+/// else is a literal host.
 ///
 /// Note: oncall hosts match by substring (`contains("oncall")`), which is a pre-existing
-/// convention. Both `api_host_for` and `auth_host_for` treat them as verbatim regardless
-/// (the `!site.contains("oncall")` guard cancels the canonical prefix), so any
-/// hostname that happens to contain "oncall" routes verbatim — the same outcome as a
-/// literal host. The practical difference is only in `normalize_site`, which skips
-/// prefix stripping for oncall hosts so the full subdomain is preserved.
+/// convention. `api_host_for` treats them as verbatim (`!site.contains("oncall")` cancels
+/// the `api.` prefix), and `auth_host_for` does too because an oncall host is not a bare
+/// UI site. Any hostname that happens to contain "oncall" routes verbatim — the same
+/// outcome as a literal host. The practical difference is only in `normalize_site`, which
+/// skips prefix stripping for oncall hosts so the full subdomain is preserved.
 pub fn is_canonical_site(site: &str) -> bool {
     site.contains("oncall") || KNOWN_SITES.contains(&site)
 }
 
-/// Returns `true` for the canonical Datadog sites that take `api.`/`app.`
-/// subdomain derivation — and whose backend region the OAuth callback may
-/// refine (e.g. `datadoghq.com` → `us3.datadoghq.com`).
+/// Returns `true` for the canonical Datadog sites that take `api.` subdomain
+/// derivation — and whose backend region the OAuth callback may refine
+/// (e.g. `datadoghq.com` → `us3.datadoghq.com`).
 ///
-/// This is the single predicate that separates "Datadog-managed site, derive
-/// subdomains and trust the callback region" from "use this host verbatim".
-/// Oncall hosts are canonical for token-storage purposes (see
-/// [`is_canonical_site`]) but are addressed verbatim, so they are excluded
-/// here — same outcome as a literal vanity/gateway host. Keeping `api_host_for`,
-/// `auth_host_for`, and the login flow's site resolution on one predicate stops
-/// the three from drifting (an earlier version open-coded the guard three times
-/// and one copy dropped the oncall exclusion).
+/// This predicate separates "Datadog-managed site, derive the API host and
+/// trust the callback region" from "use this host verbatim". Oncall hosts are
+/// canonical for token-storage purposes (see [`is_canonical_site`]) but are
+/// addressed verbatim, so they are excluded here — same outcome as a literal
+/// vanity/gateway host. `api_host_for` and the login flow's site resolution
+/// share this predicate so the oncall exclusion can't drift between them.
+/// The OAuth UI host is decided separately by [`auth_host_for`].
 pub fn uses_datadog_subdomains(site: &str) -> bool {
     is_canonical_site(site) && !site.contains("oncall")
 }
@@ -801,12 +805,29 @@ pub fn api_host_for(site: &str) -> String {
     }
 }
 
+/// Bare sites whose browser and OAuth UI live on `app.{site}`.
+///
+/// Regional sites are not in this list. `us3.datadoghq.com`, `us5.datadoghq.com`,
+/// `ap1.datadoghq.com`, `ap2.datadoghq.com`, and any other non-bare subdomain of
+/// `datadoghq.com`, `datad0g.com`, or `datadoghq.eu` serve the UI on the site
+/// host itself. Prefixing `app.` onto those hosts opens a different browser
+/// session than the one the SAML assertion consumer service posts back to.
+///
+/// `ddog-gov.com` stays here because the GovCloud UI is `app.ddog-gov.com`.
+pub const APP_PREFIX_SITES: &[&str] = &[
+    "datadoghq.com",
+    "datad0g.com",
+    "datadoghq.eu",
+    "ddog-gov.com",
+];
+
 /// Derive the OAuth authorization host from a normalized site value.
 ///
-/// - Canonical sites → `app.{site}` (e.g. `app.datadoghq.com`).
-/// - Oncall passthroughs and literal hosts → verbatim (e.g. `mycompany.datadoghq.com`).
+/// - Bare UI sites in [`APP_PREFIX_SITES`] → `app.{site}` (e.g. `app.datadoghq.com`).
+/// - Every other site, including regional canonical sites and literal hosts →
+///   verbatim (e.g. `us3.datadoghq.com`, `mycompany.datadoghq.com`).
 pub fn auth_host_for(site: &str) -> String {
-    if uses_datadog_subdomains(site) {
+    if APP_PREFIX_SITES.contains(&site) {
         format!("app.{site}")
     } else {
         site.to_string()
@@ -865,8 +886,9 @@ pub fn validate_site(s: &str) -> Result<()> {
 /// leading `www.`, `app.`, or `api.` label. Oncall sites are passed through unchanged.
 ///
 /// The stored value is then interpreted at request time via [`is_canonical_site`]:
-/// known sites get `api.`/`app.` prefixed; everything else is used verbatim as a
-/// literal host, which enables both vanity-domain SSO and custom gateway routing.
+/// known sites get `api.` prefixed, and [`APP_PREFIX_SITES`] also get `app.`
+/// prefixed for OAuth. Everything else is used verbatim as a literal host, which
+/// enables both vanity-domain SSO and custom gateway routing.
 ///
 /// Examples:
 ///   `app.datadoghq.com`           → `datadoghq.com`   (canonical)
@@ -1190,7 +1212,7 @@ mod tests {
 
     #[test]
     fn test_uses_datadog_subdomains() {
-        // Known canonical sites get api./app. derivation and callback-region trust.
+        // Known canonical sites get api. derivation and callback-region trust.
         for site in crate::config::KNOWN_SITES {
             assert!(
                 uses_datadog_subdomains(site),
@@ -1261,6 +1283,46 @@ mod tests {
         let mut cfg = make_cfg(None, None, Some("t"));
         cfg.site = "datadoghq.eu".into();
         assert_eq!(cfg.auth_host(), "app.datadoghq.eu");
+    }
+
+    #[test]
+    fn test_auth_host_bare_sites_use_app_prefix() {
+        for site in [
+            "datadoghq.com",
+            "datadoghq.eu",
+            "datad0g.com",
+            "ddog-gov.com",
+        ] {
+            assert_eq!(auth_host_for(site), format!("app.{site}"));
+        }
+    }
+
+    #[test]
+    fn test_auth_host_regional_sites_are_verbatim() {
+        for site in [
+            "us3.datadoghq.com",
+            "us5.datadoghq.com",
+            "ap1.datadoghq.com",
+            "ap2.datadoghq.com",
+        ] {
+            assert_eq!(auth_host_for(site), site);
+            // API routing is unchanged: regional sites still use api.{site}.
+            assert_eq!(api_host_for(site), format!("api.{site}"));
+        }
+    }
+
+    #[test]
+    fn test_auth_host_non_bare_subdomain_is_verbatim() {
+        // Not limited to the four named regions. Any subdomain of the bare
+        // parents stays on the site host, including one that is not a known
+        // site yet.
+        for site in [
+            "us6.datadoghq.com",
+            "extra.datad0g.com",
+            "region.datadoghq.eu",
+        ] {
+            assert_eq!(auth_host_for(site), site);
+        }
     }
 
     #[test]

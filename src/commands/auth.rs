@@ -271,8 +271,9 @@ pub async fn login(
 /// the exact host via `--site`/`DD_SITE`: the callback's `domain` names the
 /// Datadog region *behind* it, but every request and the stored credentials
 /// must stay keyed to that single host — so the user's site wins and the
-/// callback domain is ignored. Gated on the same predicate as `api_host_for`/
-/// `auth_host_for` so the exchange host can't diverge from the request host.
+/// callback domain is ignored. Gated on the same predicate as `api_host_for`
+/// so the exchange host can't diverge from the API host. `auth_host_for`
+/// derives from that same site and adds `app.` only for bare UI sites.
 ///
 /// The callback `domain` is attacker-influenceable (a tampered URL pasted into
 /// the stdin fallback path), so even on the canonical branch it is adopted only

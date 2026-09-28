@@ -33,8 +33,8 @@ pub struct DcrClient {
     /// Host for API calls (register, token). Canonical sites → `api.{site}`;
     /// literal hosts (vanity/gateway) → verbatim.
     api_host: String,
-    /// Host for the OAuth authorize redirect. Canonical sites → `app.{site}`;
-    /// literal hosts → verbatim.
+    /// Host for the OAuth authorize redirect. Bare UI sites → `app.{site}`;
+    /// regional sites and literal hosts → verbatim.
     auth_host: String,
     http: reqwest::Client,
 }
@@ -202,9 +202,10 @@ impl DcrClient {
     /// `dd_oid` when set; callers should coerce empty strings to `None`
     /// upstream so this function doesn't have to second-guess them.
     ///
-    /// The OAuth host is derived from `auth_host`: canonical sites use `app.{site}`;
-    /// literal hosts (vanity domain or gateway) are used verbatim. Pass the full
-    /// desired host via `--site` / `DD_SITE` — `--subdomain` has been removed.
+    /// The OAuth host is derived from `auth_host`: bare UI sites use `app.{site}`;
+    /// regional sites and literal hosts (vanity domain or gateway) are used
+    /// verbatim. Pass the full desired host via `--site` / `DD_SITE` —
+    /// `--subdomain` has been removed.
     pub fn build_authorization_url(
         &self,
         client_id: &str,
@@ -254,7 +255,7 @@ mod tests {
 
     #[test]
     fn build_authorization_url_uses_app_for_canonical_site() {
-        // Canonical sites → app.{site} as OAuth host.
+        // Bare UI sites → app.{site} as OAuth host.
         let client = DcrClient::new("datadoghq.com");
         let url = client.build_authorization_url(
             "client123",
@@ -308,6 +309,34 @@ mod tests {
             !url.contains("datadoghq.com"),
             "staging login must not leak to prod host: {url}"
         );
+    }
+
+    #[test]
+    fn build_authorization_url_uses_site_host_for_regional_site() {
+        for site in [
+            "us3.datadoghq.com",
+            "us5.datadoghq.com",
+            "ap1.datadoghq.com",
+            "ap2.datadoghq.com",
+        ] {
+            let client = DcrClient::new(site);
+            let url = client.build_authorization_url(
+                "client123",
+                "http://127.0.0.1:8000/oauth/callback",
+                "state",
+                &challenge(),
+                &["dashboards_read"],
+                None,
+            );
+            assert!(
+                url.starts_with(&format!("https://{site}/oauth2/v1/authorize?")),
+                "expected {site} host, got: {url}"
+            );
+            assert!(
+                !url.contains(&format!("app.{site}")),
+                "regional authorize URL must not use app.{site}: {url}"
+            );
+        }
     }
 
     #[test]
@@ -418,9 +447,14 @@ mod tests {
         assert_eq!(gateway.api_host, "mygateway.example.com");
         assert_eq!(gateway.auth_host, "mygateway.example.com");
 
-        // Staging canonical: api./app. prefixes apply.
+        // Staging bare site: api./app. prefixes apply.
         let staging = DcrClient::new("datad0g.com");
         assert_eq!(staging.api_host, "api.datad0g.com");
         assert_eq!(staging.auth_host, "app.datad0g.com");
+
+        // Regional canonical site: API still uses api.{site}; authorize does not.
+        let us3 = DcrClient::new("us3.datadoghq.com");
+        assert_eq!(us3.api_host, "api.us3.datadoghq.com");
+        assert_eq!(us3.auth_host, "us3.datadoghq.com");
     }
 }
