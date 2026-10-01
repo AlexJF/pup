@@ -1,7 +1,7 @@
 use anyhow::Result;
-use datadog_api_client::datadogV2::api_downtimes::{
-    DowntimesAPI, GetDowntimeOptionalParams, ListDowntimesOptionalParams,
-};
+#[cfg(not(generated_op = "downtime.get"))]
+use datadog_api_client::datadogV2::api_downtimes::GetDowntimeOptionalParams;
+use datadog_api_client::datadogV2::api_downtimes::{DowntimesAPI, ListDowntimesOptionalParams};
 
 use crate::config::Config;
 use crate::formatter;
@@ -15,6 +15,7 @@ pub async fn list(cfg: &Config) -> Result<()> {
     formatter::output(cfg, &resp)
 }
 
+#[cfg(not(generated_op = "downtime.get"))]
 pub async fn get(cfg: &Config, id: &str) -> Result<()> {
     let api = crate::make_api!(DowntimesAPI, cfg);
     let resp = api
@@ -24,6 +25,7 @@ pub async fn get(cfg: &Config, id: &str) -> Result<()> {
     formatter::output(cfg, &resp)
 }
 
+#[cfg(not(generated_op = "downtime.create"))]
 pub async fn create(cfg: &Config, file: &str) -> Result<()> {
     let body: datadog_api_client::datadogV2::model::DowntimeCreateRequest =
         crate::util::read_json_file(file)?;
@@ -35,6 +37,7 @@ pub async fn create(cfg: &Config, file: &str) -> Result<()> {
     formatter::output(cfg, &resp)
 }
 
+#[cfg(not(generated_op = "downtime.cancel"))]
 pub async fn cancel(cfg: &Config, id: &str) -> Result<()> {
     let api = crate::make_api!(DowntimesAPI, cfg);
     api.cancel_downtime(id.to_string())
@@ -59,6 +62,7 @@ mod tests {
         cleanup_env();
     }
 
+    #[cfg(not(generated_op = "downtime.get"))]
     #[tokio::test]
     async fn test_downtime_get() {
         let _lock = lock_env().await;

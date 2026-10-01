@@ -12723,6 +12723,24 @@ mod test_agent_schema {
         let document = build_cli_surface(&Cli::command());
         let commands = document["commands"].as_array().unwrap();
         let downtime = find_command(commands, &["downtime"]).expect("downtime command not found");
+        // The generated `downtime get` exposes the spec's optional query parameters as flags.
+        let get = if cfg!(generated_op = "downtime.get") {
+            serde_json::json!({
+                "name": "get",
+                "read_only": true,
+                "args": [{"name": "id", "type": "string", "required": true}],
+                "flags": [
+                    {"name": "include", "type": "string", "required": false},
+                    {"name": "with-run-as", "type": "string", "required": false}
+                ]
+            })
+        } else {
+            serde_json::json!({
+                "name": "get",
+                "read_only": true,
+                "args": [{"name": "id", "type": "string", "required": true}]
+            })
+        };
 
         assert_eq!(
             downtime,
@@ -12739,11 +12757,7 @@ mod test_agent_schema {
                         "read_only": false,
                         "flags": [{"name": "file", "type": "string", "required": true}]
                     },
-                    {
-                        "name": "get",
-                        "read_only": true,
-                        "args": [{"name": "id", "type": "string", "required": true}]
-                    },
+                    get,
                     {"name": "list", "read_only": true}
                 ]
             })
