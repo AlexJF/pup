@@ -296,7 +296,7 @@ pup profiling services list --query="env:prod" --from="1h" --to="now"
 pup profiling profile-types list --query="service:my-service" --from="1h" --to="now"
 
 # Scoped to a specific trace
-pup profiling profile-types list --trace-id="trace-abc" --span-id="span-123" --from="1h" --to="now"
+pup profiling profile-types list --trace-id="trace-abc" --span-id="span-123" --time-hint="1700000000" --from="1h" --to="now"
 ```
 
 ### Explore a Flame Graph / Top Stack Traces
