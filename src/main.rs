@@ -2353,6 +2353,7 @@ enum Commands {
     ///   • List services and profile types with profiling data
     ///   • Explore aggregated profiles as a flame graph / top stack traces
     ///   • Explore aggregated profiles as a call graph
+    ///   • Explore a profile's timeline (threads, lane groups, critical path)
     ///
     /// EXAMPLES:
     ///   pup profiling profiles list --query "service:my-service" --from 1h
@@ -2363,6 +2364,7 @@ enum Commands {
     ///     --query "service:my-service" --from 1h
     ///   pup profiling explore callgraph --profile-type cpu-time \
     ///     --query "service:my-service" --from 1h
+    ///   pup profiling explore timeline --profile-id prof-123 --event-id evt-id-456
     ///   pup profiling --header "test-drive-hummer-aurora: 1" services list --from 1h
     ///
     /// AUTHENTICATION:
@@ -4688,7 +4690,7 @@ enum ProfilingActions {
         #[command(subcommand)]
         action: ProfilingProfileTypesActions,
     },
-    /// Explore aggregated profiling data (flame graphs, top stack traces)
+    /// Explore aggregated profiling data (flame graphs, call graphs, timelines)
     Explore {
         #[command(subcommand)]
         action: Box<ProfilingExploreActions>,
@@ -4956,6 +4958,79 @@ enum ProfilingExploreActions {
             help = "Glob pattern (* and ?) matched against frame fields, e.g. '*MyService*'"
         )]
         frame_filter: Option<String>,
+    },
+    /// Summarize a profile timeline (lane groups, thread states, critical path)
+    Timeline {
+        #[arg(
+            long,
+            default_value = "",
+            help = "Filter query; required with --runtime-id"
+        )]
+        query: String,
+        #[arg(
+            long,
+            default_value = "1h",
+            help = "Start time: 1h, 5min, 2hours, RFC3339, Unix timestamp, or 'now'"
+        )]
+        from: String,
+        #[arg(
+            long,
+            default_value = "now",
+            help = "End time: 1h, 5min, 2hours, RFC3339, Unix timestamp, or 'now'"
+        )]
+        to: String,
+        #[arg(
+            long,
+            help = "Runtime ID of the process to scope the timeline to (requires --query)"
+        )]
+        runtime_id: Option<String>,
+        #[arg(long, help = "Trace ID to scope the timeline to a span")]
+        trace_id: Option<String>,
+        #[arg(long, help = "Span ID (required with --trace-id)")]
+        span_id: Option<String>,
+        #[arg(
+            long,
+            help = "Approximate span time, e.g. a Unix timestamp or RFC3339 (required with --trace-id)"
+        )]
+        time_hint: Option<String>,
+        #[arg(
+            long,
+            help = "Existing profile ID to scope the timeline to (used together with --event-id)"
+        )]
+        profile_id: Option<String>,
+        #[arg(
+            long,
+            help = "Event ID to scope the timeline (used together with --profile-id)"
+        )]
+        event_id: Option<String>,
+        #[arg(long, help = "Max number of lane groups (or lanes) to return")]
+        limit_lanes: Option<i32>,
+        #[arg(
+            long,
+            help = "Rank lane groups by this event type (use a key from 'threadStates' or 'pointInTimeMarkers' in a previous response)"
+        )]
+        focus_event_type: Option<String>,
+        #[arg(
+            long,
+            help = "Start of the focus window within the timeline (same formats as --from)"
+        )]
+        focus_from: Option<String>,
+        #[arg(
+            long,
+            help = "End of the focus window within the timeline (same formats as --to)"
+        )]
+        focus_to: Option<String>,
+        #[arg(
+            long,
+            help = "Drill into one lane group (its 'groupName' from a previous response), returning its individual lanes"
+        )]
+        focus_lane_group: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Restrict to the span's critical path (Go only; requires --trace-id)"
+        )]
+        critical_path: bool,
     },
 }
 
@@ -19482,6 +19557,44 @@ async fn main_inner() -> anyhow::Result<()> {
                             limit_top_nodes,
                             max_node_details,
                             frame_filter,
+                            &extra_headers,
+                        )
+                        .await?;
+                    }
+                    ProfilingExploreActions::Timeline {
+                        query,
+                        from,
+                        to,
+                        runtime_id,
+                        trace_id,
+                        span_id,
+                        time_hint,
+                        profile_id,
+                        event_id,
+                        limit_lanes,
+                        focus_event_type,
+                        focus_from,
+                        focus_to,
+                        focus_lane_group,
+                        critical_path,
+                    } => {
+                        commands::profiling::explore_timeline(
+                            &cfg,
+                            query,
+                            from,
+                            to,
+                            runtime_id,
+                            trace_id,
+                            span_id,
+                            time_hint,
+                            profile_id,
+                            event_id,
+                            limit_lanes,
+                            focus_event_type,
+                            focus_from,
+                            focus_to,
+                            focus_lane_group,
+                            critical_path,
                             &extra_headers,
                         )
                         .await?;

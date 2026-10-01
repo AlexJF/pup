@@ -324,6 +324,95 @@ pub async fn explore_callgraph(
     formatter::output(cfg, &resp)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn explore_timeline(
+    cfg: &Config,
+    query: String,
+    from: String,
+    to: String,
+    runtime_id: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    time_hint: Option<String>,
+    profile_id: Option<String>,
+    event_id: Option<String>,
+    limit_lanes: Option<i32>,
+    focus_event_type: Option<String>,
+    focus_from: Option<String>,
+    focus_to: Option<String>,
+    focus_lane_group: Option<String>,
+    critical_path: bool,
+    extra_headers: &[(&str, &str)],
+) -> Result<()> {
+    let scopes = [
+        runtime_id.is_some(),
+        trace_id.is_some(),
+        profile_id.is_some(),
+    ];
+    if scopes.iter().filter(|s| **s).count() != 1 {
+        anyhow::bail!(
+            "exactly one of --runtime-id, --trace-id, or --profile-id is required to scope the timeline"
+        );
+    }
+    if profile_id.is_some() != event_id.is_some() {
+        anyhow::bail!("--profile-id and --event-id must be used together");
+    }
+    if runtime_id.is_some() && query.trim().is_empty() {
+        anyhow::bail!("--query is required with --runtime-id");
+    }
+    if critical_path && trace_id.is_none() {
+        anyhow::bail!("--critical-path requires --trace-id");
+    }
+    if limit_lanes.is_some_and(|l| l <= 0) {
+        anyhow::bail!("--limit-lanes must be positive");
+    }
+    let trace_context = trace_context_json(trace_id, span_id, time_hint)?;
+
+    let mut body = json!({
+        "filter": filter_json(&query, &from, &to)?,
+    });
+    if let Some(runtime_id) = runtime_id {
+        body["runtimeId"] = json!(runtime_id);
+    }
+    if let Some(trace_context) = trace_context {
+        body["traceContext"] = trace_context;
+    }
+    if let Some(profile_id) = profile_id {
+        body["profileContext"] = json!({
+            "profileId": profile_id,
+            "eventId": event_id,
+        });
+    }
+    if let Some(limit_lanes) = limit_lanes {
+        body["limitLanes"] = json!(limit_lanes);
+    }
+    if let Some(focus_event_type) = focus_event_type {
+        body["focusEventType"] = json!(focus_event_type);
+    }
+    if let Some(focus_from) = focus_from {
+        body["focusStartTime"] = json!(util_ext::parse_time_to_datetime(&focus_from)?.to_rfc3339());
+    }
+    if let Some(focus_to) = focus_to {
+        body["focusEndTime"] = json!(util_ext::parse_time_to_datetime(&focus_to)?.to_rfc3339());
+    }
+    if let Some(focus_lane_group) = focus_lane_group {
+        body["focusLaneGroup"] = json!(focus_lane_group);
+    }
+    if critical_path {
+        body["useCriticalPath"] = json!(true);
+    }
+
+    let resp = raw_client::raw_post_with_headers(
+        cfg,
+        &format!("{BASE}/explore/timeline"),
+        body,
+        extra_headers,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("failed to explore timeline: {e:?}"))?;
+    formatter::output(cfg, &resp)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::{Config, OutputFormat};
@@ -1828,6 +1917,356 @@ mod tests {
             "explore_callgraph with trace context failed: {:?}",
             result.err()
         );
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    // ---- explore timeline ----
+
+    const TIMELINE_RESPONSE: &str = r#"{"laneGroups":[],"timeRange":{"startNs":0,"endNs":0},"totalDuration":{"value":0.0,"unit":"nanoseconds","isPerMinute":false},"visualizationLink":{"title":"","url":""}}"#;
+
+    /// Arguments for `explore_timeline`, defaulting to profile-id scoping.
+    struct TimelineArgs {
+        query: String,
+        runtime_id: Option<String>,
+        trace_id: Option<String>,
+        span_id: Option<String>,
+        time_hint: Option<String>,
+        profile_id: Option<String>,
+        event_id: Option<String>,
+        limit_lanes: Option<i32>,
+        focus_event_type: Option<String>,
+        focus_from: Option<String>,
+        focus_to: Option<String>,
+        focus_lane_group: Option<String>,
+        critical_path: bool,
+    }
+
+    impl Default for TimelineArgs {
+        fn default() -> Self {
+            Self {
+                query: "".into(),
+                runtime_id: None,
+                trace_id: None,
+                span_id: None,
+                time_hint: None,
+                profile_id: Some("prof-123".into()),
+                event_id: Some("evt-456".into()),
+                limit_lanes: None,
+                focus_event_type: None,
+                focus_from: None,
+                focus_to: None,
+                focus_lane_group: None,
+                critical_path: false,
+            }
+        }
+    }
+
+    impl TimelineArgs {
+        async fn run(self, cfg: &Config) -> anyhow::Result<()> {
+            super::explore_timeline(
+                cfg,
+                self.query,
+                "1h".into(),
+                "now".into(),
+                self.runtime_id,
+                self.trace_id,
+                self.span_id,
+                self.time_hint,
+                self.profile_id,
+                self.event_id,
+                self.limit_lanes,
+                self.focus_event_type,
+                self.focus_from,
+                self.focus_to,
+                self.focus_lane_group,
+                self.critical_path,
+                &[],
+            )
+            .await
+        }
+    }
+
+    async fn timeline_mock(
+        server: &mut mockito::ServerGuard,
+        expected_body: serde_json::Value,
+    ) -> mockito::Mock {
+        server
+            .mock("POST", "/api/unstable/profiling/pup/explore/timeline")
+            .match_body(mockito::Matcher::PartialJson(expected_body))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(TIMELINE_RESPONSE)
+            .create_async()
+            .await
+    }
+
+    async fn assert_timeline_validation_error(args: TimelineArgs, expected: &str) {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let cfg = test_config("http://unused.local");
+
+        let result = args.run(&cfg).await;
+        let err = result.expect_err("expected a validation error");
+        assert!(
+            err.to_string().contains(expected),
+            "expected error containing {expected:?}, got: {err}"
+        );
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_profile_context_ok() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+        let mock = timeline_mock(
+            &mut server,
+            serde_json::json!({"profileContext": {"profileId": "prof-123", "eventId": "evt-456"}}),
+        )
+        .await;
+
+        let result = TimelineArgs::default().run(&cfg).await;
+        assert!(
+            result.is_ok(),
+            "explore_timeline failed: {:?}",
+            result.err()
+        );
+        mock.assert_async().await;
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_runtime_id_sends_optional_fields() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+        let mock = timeline_mock(
+            &mut server,
+            serde_json::json!({
+                "runtimeId": "rt-1",
+                "filter": {"query": "service:my-service"},
+                "limitLanes": 3,
+                "focusEventType": "CPU",
+                "focusStartTime": "2023-11-14T22:13:20+00:00",
+                "focusEndTime": "2023-11-14T22:14:20+00:00",
+                "focusLaneGroup": "thread",
+            }),
+        )
+        .await;
+
+        let result = TimelineArgs {
+            query: "service:my-service".into(),
+            runtime_id: Some("rt-1".into()),
+            profile_id: None,
+            event_id: None,
+            limit_lanes: Some(3),
+            focus_event_type: Some("CPU".into()),
+            focus_from: Some("2023-11-14T22:13:20Z".into()),
+            focus_to: Some("1700000060".into()),
+            focus_lane_group: Some("thread".into()),
+            ..Default::default()
+        }
+        .run(&cfg)
+        .await;
+        assert!(
+            result.is_ok(),
+            "explore_timeline failed: {:?}",
+            result.err()
+        );
+        mock.assert_async().await;
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_trace_context_with_critical_path() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+        let mock = timeline_mock(
+            &mut server,
+            serde_json::json!({
+                "traceContext": {"traceId": "trace-abc", "spanId": "span-123", "timeHint": "1700000000"},
+                "useCriticalPath": true,
+            }),
+        )
+        .await;
+
+        let result = TimelineArgs {
+            trace_id: Some("trace-abc".into()),
+            span_id: Some("span-123".into()),
+            time_hint: Some("1700000000".into()),
+            profile_id: None,
+            event_id: None,
+            critical_path: true,
+            ..Default::default()
+        }
+        .run(&cfg)
+        .await;
+        assert!(
+            result.is_ok(),
+            "explore_timeline failed: {:?}",
+            result.err()
+        );
+        mock.assert_async().await;
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_requires_scope() {
+        assert_timeline_validation_error(
+            TimelineArgs {
+                profile_id: None,
+                event_id: None,
+                ..Default::default()
+            },
+            "exactly one of --runtime-id, --trace-id, or --profile-id",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_rejects_multiple_scopes() {
+        assert_timeline_validation_error(
+            TimelineArgs {
+                query: "service:my-service".into(),
+                runtime_id: Some("rt-1".into()),
+                ..Default::default()
+            },
+            "exactly one of --runtime-id, --trace-id, or --profile-id",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_requires_profile_id_and_event_id_together() {
+        assert_timeline_validation_error(
+            TimelineArgs {
+                event_id: None,
+                ..Default::default()
+            },
+            "--profile-id and --event-id must be used together",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_runtime_id_requires_query() {
+        assert_timeline_validation_error(
+            TimelineArgs {
+                runtime_id: Some("rt-1".into()),
+                profile_id: None,
+                event_id: None,
+                ..Default::default()
+            },
+            "--query is required with --runtime-id",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_critical_path_requires_trace_id() {
+        assert_timeline_validation_error(
+            TimelineArgs {
+                critical_path: true,
+                ..Default::default()
+            },
+            "--critical-path requires --trace-id",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_trace_id_requires_time_hint() {
+        assert_timeline_validation_error(
+            TimelineArgs {
+                trace_id: Some("trace-abc".into()),
+                span_id: Some("span-123".into()),
+                profile_id: None,
+                event_id: None,
+                ..Default::default()
+            },
+            "--trace-id requires both --span-id and --time-hint",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_limit_lanes_must_be_positive() {
+        assert_timeline_validation_error(
+            TimelineArgs {
+                limit_lanes: Some(0),
+                ..Default::default()
+            },
+            "--limit-lanes must be positive",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_tolerates_null_optional_fields() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+
+        let body = r#"{"laneGroups":[],"timeRange":{"startNs":0,"endNs":0},"totalDuration":{"value":0.0,"unit":"nanoseconds","isPerMinute":false},"coverageRatio":null,"criticalPathMetadata":null,"visualizationLink":{"title":"","url":""},"emptyStateReason":null}"#;
+        let _mock = mock_any(&mut server, "POST", body).await;
+
+        let result = TimelineArgs::default().run(&cfg).await;
+        assert!(
+            result.is_ok(),
+            "should tolerate null optional response fields: {:?}",
+            result.err()
+        );
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_validation_error() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+
+        let _mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(400)
+            .with_body(
+                r#"{"errors":["runtimeId, traceContext, or profileContext must be present"]}"#,
+            )
+            .create_async()
+            .await;
+
+        let result = TimelineArgs::default().run(&cfg).await;
+        assert!(result.is_err(), "expected a 400 to surface as an error");
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_timeline_no_auth() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let cfg = no_auth_config();
+
+        let result = TimelineArgs::default().run(&cfg).await;
+        assert!(result.is_err(), "should fail without auth");
 
         cleanup_env();
         std::env::remove_var("DD_TOKEN_STORAGE");
