@@ -57,7 +57,7 @@ fn extract_api_errors(resp: &serde_json::Value) -> Option<String> {
     Some(messages.join("; "))
 }
 
-const PROBES_PATH: &str = "/api/ui/remote_config/products/live_debugging/probes/log";
+const PROBES_PATH: &str = "/api/ui/debugger/live-debugger/probes/log/";
 
 pub async fn probes_list(cfg: &Config, service: Option<&str>) -> Result<()> {
     let query: Vec<(&str, &str)> = service.iter().map(|s| ("service", *s)).collect();
@@ -66,7 +66,7 @@ pub async fn probes_list(cfg: &Config, service: Option<&str>) -> Result<()> {
 }
 
 pub async fn probes_get(cfg: &Config, id: &str) -> Result<()> {
-    let data = get(cfg, &format!("{PROBES_PATH}/{id}"), &[]).await?;
+    let data = get(cfg, &format!("{PROBES_PATH}{id}/"), &[]).await?;
     formatter::output(cfg, &data)
 }
 
@@ -426,7 +426,7 @@ fn extract_create_fields(resp: &serde_json::Value, field_list: &str) -> serde_js
 }
 
 pub async fn probes_delete(cfg: &Config, id: &str) -> Result<()> {
-    delete(cfg, &format!("{PROBES_PATH}/{id}")).await?;
+    delete(cfg, &format!("{PROBES_PATH}{id}/")).await?;
     delete_output(cfg, id)
 }
 
@@ -1112,9 +1112,16 @@ mod tests {
         let _lock = lock_env().await;
         let mut s = mockito::Server::new_async().await;
         let cfg = test_config(&s.url());
-        mock_all(&mut s, r#"[{"id": "probe-1", "type": "LOG_PROBE"}]"#).await;
-        let _ = super::probes_list(&cfg, None).await;
+        let mock = s
+            .mock("GET", "/api/ui/debugger/live-debugger/probes/log/")
+            .with_status(200)
+            .with_body(r#"[{"id": "probe-1", "type": "LOG_PROBE"}]"#)
+            .create_async()
+            .await;
+        let result = super::probes_list(&cfg, None).await;
         cleanup_env();
+        result.unwrap();
+        mock.assert_async().await;
     }
 
     #[tokio::test]
@@ -1122,9 +1129,20 @@ mod tests {
         let _lock = lock_env().await;
         let mut s = mockito::Server::new_async().await;
         let cfg = test_config(&s.url());
-        mock_all(&mut s, r#"[{"id": "probe-1", "type": "LOG_PROBE"}]"#).await;
-        let _ = super::probes_list(&cfg, Some("my-service")).await;
+        let mock = s
+            .mock("GET", "/api/ui/debugger/live-debugger/probes/log/")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "service".into(),
+                "my-service".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"[{"id": "probe-1", "type": "LOG_PROBE"}]"#)
+            .create_async()
+            .await;
+        let result = super::probes_list(&cfg, Some("my-service")).await;
         cleanup_env();
+        result.unwrap();
+        mock.assert_async().await;
     }
 
     #[tokio::test]
@@ -1132,9 +1150,16 @@ mod tests {
         let _lock = lock_env().await;
         let mut s = mockito::Server::new_async().await;
         let cfg = test_config(&s.url());
-        mock_all(&mut s, r#"{"id": "probe-1", "type": "LOG_PROBE"}"#).await;
-        let _ = super::probes_get(&cfg, "probe-1").await;
+        let mock = s
+            .mock("GET", "/api/ui/debugger/live-debugger/probes/log/probe-1/")
+            .with_status(200)
+            .with_body(r#"{"id": "probe-1", "type": "LOG_PROBE"}"#)
+            .create_async()
+            .await;
+        let result = super::probes_get(&cfg, "probe-1").await;
         cleanup_env();
+        result.unwrap();
+        mock.assert_async().await;
     }
 
     #[tokio::test]
@@ -1142,7 +1167,12 @@ mod tests {
         let _lock = lock_env().await;
         let mut s = mockito::Server::new_async().await;
         let cfg = test_config(&s.url());
-        mock_all(&mut s, r#"{"data": {"id": "probe-new"}}"#).await;
+        let mock = s
+            .mock("POST", "/api/ui/debugger/live-debugger/probes/log/")
+            .with_status(202)
+            .with_body(r#"{"data": {"id": "probe-new"}}"#)
+            .create_async()
+            .await;
         let params = super::ProbeCreateParams {
             service: "my-service",
             env: "staging",
@@ -1158,8 +1188,10 @@ mod tests {
             depth: 3,
             fields: None,
         };
-        let _ = super::probes_create(&cfg, params).await;
+        let result = super::probes_create(&cfg, params).await;
         cleanup_env();
+        result.unwrap();
+        mock.assert_async().await;
     }
 
     #[tokio::test]
@@ -1167,8 +1199,34 @@ mod tests {
         let _lock = lock_env().await;
         let mut s = mockito::Server::new_async().await;
         let cfg = test_config(&s.url());
-        mock_all(&mut s, r#""#).await;
-        let _ = super::probes_delete(&cfg, "probe-1").await;
+        let mock = s
+            .mock(
+                "DELETE",
+                "/api/ui/debugger/live-debugger/probes/log/probe-1/",
+            )
+            .with_status(204)
+            .create_async()
+            .await;
+        let result = super::probes_delete(&cfg, "probe-1").await;
         cleanup_env();
+        result.unwrap();
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_debugger_probes_get_not_found() {
+        let _lock = lock_env().await;
+        let mut s = mockito::Server::new_async().await;
+        let cfg = test_config(&s.url());
+        let mock = s
+            .mock("GET", "/api/ui/debugger/live-debugger/probes/log/missing/")
+            .with_status(404)
+            .with_body(r#"{"errors":["Probe not found"]}"#)
+            .create_async()
+            .await;
+        let result = super::probes_get(&cfg, "missing").await;
+        cleanup_env();
+        assert!(result.is_err());
+        mock.assert_async().await;
     }
 }
