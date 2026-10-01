@@ -243,6 +243,65 @@ pub async fn explore_flamegraph(
     formatter::output(cfg, &resp)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn explore_callgraph(
+    cfg: &Config,
+    profile_type: String,
+    query: String,
+    from: String,
+    to: String,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    profile_id: Option<String>,
+    event_id: Option<String>,
+    percent_cutoff: f64,
+    limit_top_nodes: i32,
+    max_node_details: i32,
+    frame_filter: Option<String>,
+    extra_headers: &[(&str, &str)],
+) -> Result<()> {
+    if trace_id.is_none() && profile_id.is_none() && query.trim().is_empty() {
+        anyhow::bail!(
+            "one of --query, --trace-id, or --profile-id is required to scope the call graph"
+        );
+    }
+    if profile_id.is_some() != event_id.is_some() {
+        anyhow::bail!("--profile-id and --event-id must be used together");
+    }
+
+    let mut body = json!({
+        "filter": filter_json(&query, &from, &to)?,
+        "profileType": profile_type,
+        "percentCutoff": percent_cutoff,
+        "limitTopNodes": limit_top_nodes,
+        "maxNodeDetails": max_node_details,
+        "frameFilter": frame_filter,
+    });
+    if let Some(trace_id) = trace_id {
+        body["traceContext"] = json!({
+            "traceId": trace_id,
+            "spanId": span_id,
+            "timeHint": null,
+        });
+    }
+    if let Some(profile_id) = profile_id {
+        body["profileContext"] = json!({
+            "profileId": profile_id,
+            "eventId": event_id,
+        });
+    }
+
+    let resp = raw_client::raw_post_with_headers(
+        cfg,
+        &format!("{BASE}/explore/callgraph"),
+        body,
+        extra_headers,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("failed to explore call graph: {e:?}"))?;
+    formatter::output(cfg, &resp)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::{Config, OutputFormat};
@@ -1275,6 +1334,335 @@ mod tests {
             frame_format,
             frame_grouping,
             bypass_kind_truncation,
+            &[],
+        )
+        .await;
+        assert!(result.is_err(), "should fail without auth");
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    // ---- explore callgraph ----
+
+    #[allow(clippy::type_complexity)]
+    type CallgraphArgs = (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        f64,
+        i32,
+        i32,
+        Option<String>,
+    );
+
+    fn callgraph_args() -> CallgraphArgs {
+        (
+            "cpu-time".into(),
+            "service:my-service".into(),
+            "1h".into(),
+            "now".into(),
+            None,
+            None,
+            None,
+            None,
+            0.0,
+            0,
+            0,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_callgraph_ok() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+
+        let body = r#"{"sortedNodes":[],"totalValue":{"value":0.0,"unit":"nanoseconds","isPerMinute":false},"totalMatchingValue":{"value":0.0,"unit":"nanoseconds","isPerMinute":false},"duration":0.0,"numberOfProfiles":0,"totalNodeCount":0,"totalEdgeCount":0,"visualizationLink":{"title":"","url":""}}"#;
+        let _mock = mock_any(&mut server, "POST", body).await;
+
+        let (
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+        ) = callgraph_args();
+        let result = super::explore_callgraph(
+            &cfg,
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+            &[],
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "explore_callgraph failed: {:?}",
+            result.err()
+        );
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_callgraph_requires_scope() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let cfg = test_config("http://unused.local");
+
+        let (
+            profile_type,
+            _query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+        ) = callgraph_args();
+        let result = super::explore_callgraph(
+            &cfg,
+            profile_type,
+            "".into(),
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+            &[],
+        )
+        .await;
+        assert!(result.is_err(), "expected a scope-validation error");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("one of --query, --trace-id, or --profile-id"));
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_callgraph_requires_profile_id_and_event_id_together() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let cfg = test_config("http://unused.local");
+
+        let (
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            _profile_id,
+            _event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+        ) = callgraph_args();
+        let result = super::explore_callgraph(
+            &cfg,
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            Some("prof-123".into()),
+            None,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+            &[],
+        )
+        .await;
+        assert!(result.is_err(), "expected a profile-id/event-id error");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("--profile-id and --event-id must be used together"));
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_callgraph_tolerates_null_optional_fields() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+
+        let body = r#"{"sortedNodes":[],"totalValue":{"value":0.0,"unit":"nanoseconds","isPerMinute":false},"totalMatchingValue":{"value":0.0,"unit":"nanoseconds","isPerMinute":false},"duration":0.0,"numberOfProfiles":0,"totalNodeCount":0,"totalEdgeCount":0,"visualizationLink":{"title":"","url":""},"message":null,"emptyStateReason":null}"#;
+        let _mock = mock_any(&mut server, "POST", body).await;
+
+        let (
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+        ) = callgraph_args();
+        let result = super::explore_callgraph(
+            &cfg,
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+            &[],
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "should tolerate null optional response fields: {:?}",
+            result.err()
+        );
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_callgraph_validation_error() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+
+        let _mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(400)
+            .with_body(r#"{"errors":["profileType is required"]}"#)
+            .create_async()
+            .await;
+
+        let (
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+        ) = callgraph_args();
+        let result = super::explore_callgraph(
+            &cfg,
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+            &[],
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected error but got ok: {:?}",
+            result.ok()
+        );
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_callgraph_no_auth() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let cfg = no_auth_config();
+
+        let (
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+        ) = callgraph_args();
+        let result = super::explore_callgraph(
+            &cfg,
+            profile_type,
+            query,
+            from,
+            to,
+            trace_id,
+            span_id,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
             &[],
         )
         .await;
