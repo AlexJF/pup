@@ -4920,6 +4920,11 @@ enum ProfilingExploreActions {
         span_id: Option<String>,
         #[arg(
             long,
+            help = "Approximate span time, e.g. a Unix timestamp or RFC3339 (required with --trace-id)"
+        )]
+        time_hint: Option<String>,
+        #[arg(
+            long,
             help = "Existing profile ID to scope the query instead of --query (used together with --event-id)"
         )]
         profile_id: Option<String>,
@@ -19454,6 +19459,7 @@ async fn main_inner() -> anyhow::Result<()> {
                         to,
                         trace_id,
                         span_id,
+                        time_hint,
                         profile_id,
                         event_id,
                         percent_cutoff,
@@ -19469,6 +19475,7 @@ async fn main_inner() -> anyhow::Result<()> {
                             to,
                             trace_id,
                             span_id,
+                            time_hint,
                             profile_id,
                             event_id,
                             percent_cutoff,

@@ -332,7 +332,7 @@ pup profiling explore callgraph \
 # Filter to frames matching a glob pattern, scoped to a specific trace instead of --query
 pup profiling explore callgraph \
   --profile-type="cpu-time" \
-  --trace-id="trace-abc" --span-id="span-123" \
+  --trace-id="trace-abc" --span-id="span-123" --time-hint="1700000000" \
   --frame-filter="*MyService*" \
   --from="1h" --to="now"
 ```

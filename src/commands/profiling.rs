@@ -50,6 +50,30 @@ fn filter_json(query: &str, from: &str, to: &str) -> Result<serde_json::Value> {
     }))
 }
 
+/// Builds the `traceContext` request part. The backend requires traceId, spanId
+/// and timeHint (epoch seconds) together, so all three must be provided.
+fn trace_context_json(
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    time_hint: Option<String>,
+) -> Result<Option<serde_json::Value>> {
+    let Some(trace_id) = trace_id else {
+        if span_id.is_some() || time_hint.is_some() {
+            anyhow::bail!("--span-id and --time-hint require --trace-id");
+        }
+        return Ok(None);
+    };
+    let (Some(span_id), Some(time_hint)) = (span_id, time_hint) else {
+        anyhow::bail!("--trace-id requires both --span-id and --time-hint");
+    };
+    let time_hint_secs = util_ext::parse_time_to_datetime(&time_hint)?.timestamp();
+    Ok(Some(json!({
+        "traceId": trace_id,
+        "spanId": span_id,
+        "timeHint": time_hint_secs.to_string(),
+    })))
+}
+
 // ---- Profiles ----
 
 #[allow(clippy::too_many_arguments)]
@@ -252,6 +276,7 @@ pub async fn explore_callgraph(
     to: String,
     trace_id: Option<String>,
     span_id: Option<String>,
+    time_hint: Option<String>,
     profile_id: Option<String>,
     event_id: Option<String>,
     percent_cutoff: f64,
@@ -268,6 +293,7 @@ pub async fn explore_callgraph(
     if profile_id.is_some() != event_id.is_some() {
         anyhow::bail!("--profile-id and --event-id must be used together");
     }
+    let trace_context = trace_context_json(trace_id, span_id, time_hint)?;
 
     let mut body = json!({
         "filter": filter_json(&query, &from, &to)?,
@@ -277,12 +303,8 @@ pub async fn explore_callgraph(
         "maxNodeDetails": max_node_details,
         "frameFilter": frame_filter,
     });
-    if let Some(trace_id) = trace_id {
-        body["traceContext"] = json!({
-            "traceId": trace_id,
-            "spanId": span_id,
-            "timeHint": null,
-        });
+    if let Some(trace_context) = trace_context {
+        body["traceContext"] = trace_context;
     }
     if let Some(profile_id) = profile_id {
         body["profileContext"] = json!({
@@ -1343,6 +1365,70 @@ mod tests {
         std::env::remove_var("DD_TOKEN_STORAGE");
     }
 
+    // ---- trace context ----
+
+    #[test]
+    fn test_trace_context_json_none_without_trace_id() {
+        assert_eq!(super::trace_context_json(None, None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn test_trace_context_json_converts_time_hint_to_epoch_seconds() {
+        let ctx = super::trace_context_json(
+            Some("trace-abc".into()),
+            Some("span-123".into()),
+            Some("2023-11-14T22:13:20Z".into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ctx,
+            serde_json::json!({
+                "traceId": "trace-abc",
+                "spanId": "span-123",
+                "timeHint": "1700000000",
+            })
+        );
+    }
+
+    #[test]
+    fn test_trace_context_json_requires_span_id_and_time_hint() {
+        let err =
+            super::trace_context_json(Some("trace-abc".into()), Some("span-123".into()), None)
+                .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--trace-id requires both --span-id and --time-hint"));
+        let err =
+            super::trace_context_json(Some("trace-abc".into()), None, Some("1700000000".into()))
+                .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--trace-id requires both --span-id and --time-hint"));
+    }
+
+    #[test]
+    fn test_trace_context_json_rejects_orphan_span_id_or_time_hint() {
+        let err = super::trace_context_json(None, Some("span-123".into()), None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--span-id and --time-hint require --trace-id"));
+        let err = super::trace_context_json(None, None, Some("1700000000".into())).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--span-id and --time-hint require --trace-id"));
+    }
+
+    #[test]
+    fn test_trace_context_json_rejects_invalid_time_hint() {
+        assert!(super::trace_context_json(
+            Some("trace-abc".into()),
+            Some("span-123".into()),
+            Some("not-a-time".into()),
+        )
+        .is_err());
+    }
+
     // ---- explore callgraph ----
 
     #[allow(clippy::type_complexity)]
@@ -1351,6 +1437,7 @@ mod tests {
         String,
         String,
         String,
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -1367,6 +1454,7 @@ mod tests {
             "service:my-service".into(),
             "1h".into(),
             "now".into(),
+            None,
             None,
             None,
             None,
@@ -1395,6 +1483,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1410,6 +1499,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1442,6 +1532,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1457,6 +1548,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1489,6 +1581,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             _profile_id,
             _event_id,
             percent_cutoff,
@@ -1504,6 +1597,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             Some("prof-123".into()),
             None,
             percent_cutoff,
@@ -1540,6 +1634,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1555,6 +1650,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1595,6 +1691,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1610,6 +1707,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1642,6 +1740,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1657,6 +1756,7 @@ mod tests {
             to,
             trace_id,
             span_id,
+            time_hint,
             profile_id,
             event_id,
             percent_cutoff,
@@ -1667,6 +1767,67 @@ mod tests {
         )
         .await;
         assert!(result.is_err(), "should fail without auth");
+
+        cleanup_env();
+        std::env::remove_var("DD_TOKEN_STORAGE");
+    }
+
+    #[tokio::test]
+    async fn test_profiling_explore_callgraph_trace_context_sends_time_hint() {
+        let _lock = lock_env().await;
+        std::env::set_var("DD_TOKEN_STORAGE", "file");
+        let mut server = mockito::Server::new_async().await;
+        let cfg = test_config(&server.url());
+
+        let _mock = server
+            .mock("POST", "/api/unstable/profiling/pup/explore/callgraph")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "traceContext": {"traceId": "trace-abc", "spanId": "span-123", "timeHint": "1700000000"}
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"sortedNodes":[],"visualizationLink":{"title":"","url":""}}"#)
+            .create_async()
+            .await;
+
+        let (
+            profile_type,
+            _query,
+            from,
+            to,
+            _trace_id,
+            _span_id,
+            _time_hint,
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+        ) = callgraph_args();
+        let result = super::explore_callgraph(
+            &cfg,
+            profile_type,
+            "".into(),
+            from,
+            to,
+            Some("trace-abc".into()),
+            Some("span-123".into()),
+            Some("1700000000".into()),
+            profile_id,
+            event_id,
+            percent_cutoff,
+            limit_top_nodes,
+            max_node_details,
+            frame_filter,
+            &[],
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "explore_callgraph with trace context failed: {:?}",
+            result.err()
+        );
 
         cleanup_env();
         std::env::remove_var("DD_TOKEN_STORAGE");
