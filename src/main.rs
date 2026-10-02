@@ -4541,6 +4541,7 @@ enum EventActions {
 #[derive(Subcommand)]
 enum DowntimeActions {
     /// List all downtimes
+    #[cfg(not(generated_op = "downtime.list"))]
     List,
     /// Get downtime details
     #[cfg(not(generated_op = "downtime.get"))]
@@ -12866,7 +12867,8 @@ mod test_agent_schema {
         let document = build_cli_surface(&Cli::command());
         let commands = document["commands"].as_array().unwrap();
         let downtime = find_command(commands, &["downtime"]).expect("downtime command not found");
-        // The generated `downtime get` exposes the spec's optional query parameters as flags.
+        // The generated `downtime get` and `downtime list` expose the spec's optional query
+        // parameters as flags.
         let get = if cfg!(generated_op = "downtime.get") {
             serde_json::json!({
                 "name": "get",
@@ -12883,6 +12885,20 @@ mod test_agent_schema {
                 "read_only": true,
                 "args": [{"name": "id", "type": "string", "required": true}]
             })
+        };
+        let list = if cfg!(generated_op = "downtime.list") {
+            serde_json::json!({
+                "name": "list",
+                "read_only": true,
+                "flags": [
+                    {"name": "current-only", "type": "string", "required": false},
+                    {"name": "include", "type": "string", "required": false},
+                    {"name": "page-limit", "type": "string", "required": false},
+                    {"name": "page-offset", "type": "string", "required": false}
+                ]
+            })
+        } else {
+            serde_json::json!({"name": "list", "read_only": true})
         };
 
         assert_eq!(
@@ -12901,7 +12917,7 @@ mod test_agent_schema {
                         "flags": [{"name": "file", "type": "string", "required": true}]
                     },
                     get,
-                    {"name": "list", "read_only": true}
+                    list
                 ]
             })
         );
@@ -15103,6 +15119,7 @@ async fn main_inner() -> anyhow::Result<()> {
         Commands::Downtime { action } => {
             cfg.validate_auth()?;
             match action {
+                #[cfg(not(generated_op = "downtime.list"))]
                 DowntimeActions::List => commands::downtime::list(&cfg).await?,
                 #[cfg(not(generated_op = "downtime.get"))]
                 DowntimeActions::Get { id } => commands::downtime::get(&cfg, &id).await?,
