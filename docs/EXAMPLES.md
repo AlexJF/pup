@@ -337,6 +337,26 @@ pup profiling explore callgraph \
   --from="1h" --to="now"
 ```
 
+### Explore a Timeline
+```bash
+# Summarize a single profile's timeline (top lane groups by activity)
+pup profiling explore timeline \
+  --profile-id="prof-123" --event-id="AwAAAaB7..."
+
+# Recent timeline of one process, drilling into one lane group
+# (use a "groupName" returned by a previous call)
+pup profiling explore timeline \
+  --runtime-id="0b1c2d3e-..." \
+  --query="service:my-service" \
+  --from="15m" --to="now" \
+  --focus-lane-group="<groupName>"
+
+# Timeline around a span, restricted to its critical path (Go only)
+pup profiling explore timeline \
+  --trace-id="trace-abc" --span-id="span-123" --time-hint="1700000000" \
+  --critical-path
+```
+
 ## Change Stories
 
 ### List Change Stories for a Service
