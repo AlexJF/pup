@@ -272,6 +272,11 @@ pup dbm samples search \
 
 `pup profiling` wraps a small, pup-CLI-scoped Continuous Profiler API.
 
+> **Reduced support guarantee:** `pup profiling` commands call unstable
+> (`/api/unstable/profiling/pup/...`) endpoints. These are supported for the latest pup
+> release, with older pup versions kept working for 30 days after a newer release. Upgrade
+> pup regularly if you depend on these commands.
+
 ### Search Profile Events
 ```bash
 pup profiling profiles list --query="service:my-service" --from="1h" --to="now" --limit=20
